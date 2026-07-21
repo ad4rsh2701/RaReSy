@@ -100,8 +100,77 @@ namespace raresy {
                          || std::same_as<T, FIELD_TYPE>
                          || std::same_as<T, std::monostate>;
 
-    /// ############################################################################################################ ///
+    /// ############################################# Status ####################################################### ///
 
+    /**
+     * @brief Represents a status containing response class within the Rapid Response System.
+     *
+     * `Status` encapsulates the response status and provides helper
+     * functions within it to evaluate the `StatusCode` state.
+     *
+     * It also provides a getter function to retrieve the status code.
+     *
+     * This only holds the overall status code; even in cases where multiple
+     * status codes might be required, in such cases, an appropriate status
+     * code showcasing the potential errors may be used.
+     */
+    class Status {
+
+    public:
+        // default formality constructor
+        constexpr Status() noexcept = default;
+        // Explicit constructor to initialize `_status_code` with StatusCode types.
+        explicit Status(StatusCode status_code) noexcept : _status_code(status_code) {
+            if (static_cast<int16_t>(status_code) >= 400) {  // 400+ is the range of errors
+                ++_failure_count;
+            }
+        }
+
+    private:
+        /// Represents a single status outcome; either from a single operation
+        /// or is the overall result when no per-operation diagnostics are needed.
+        StatusCode _status_code = StatusCode::ORPHANED;
+
+        /// Total failure count
+        int16_t _failure_count = 0;
+
+    public:
+        /**
+         * @brief Setter to set the status code of the response
+         * @note Also updates the count of errors if the status code is an error.
+         * @param status_code The status code to be set
+         */
+        constexpr void setCode(const StatusCode status_code) noexcept {
+            _status_code = status_code;
+            if (static_cast<int16_t>(status_code) >= 400) {  // 400+ is the range of errors
+                ++_failure_count;
+            }
+        }
+
+        /**
+         * @brief Returns the error count of the response
+         * @return _failure_count
+         */
+        [[nodiscard]] constexpr int16_t errorCount() const noexcept {
+            return _failure_count;
+        }
+
+        /**
+         * @brief Returns the status_code of the response
+         * @return StatusCode
+         */
+        [[nodiscard]] constexpr StatusCode code() const noexcept {
+            return _status_code;
+        }
+
+        /**
+         * @brief Checks if the status code is OK.
+         * @return `true` if the response status is `StatusCode::OK`, otherwise false.
+         */
+        [[nodiscard]] constexpr bool ok() const noexcept {
+            return _status_code == StatusCode::OK;
+        }
+    };
 } // namespace raresy
 
 #endif // RARESY_HPP
