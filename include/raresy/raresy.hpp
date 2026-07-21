@@ -235,8 +235,7 @@ namespace raresy {
             _status_code = code;
         }
 
-
-        // especially these two
+        // especially these two:
 
         /**
          * @brief Setter to set the field value of the response
@@ -249,6 +248,282 @@ namespace raresy {
          * @param code The status code of type StatusCode
          */
         constexpr void setCode(const StatusCode code) noexcept { _status_code = code; }
+    };
+
+    /// #################################### StatusBatchWith<F1, F2> ############################################### ///
+    /**
+     * @brief Represents a Batched Target_Field-Status_Field response class to track individual Target-Result
+     * or target-status_codes when a command operates on multiple targets or when multiple results/status codes
+     * need to be reported together.
+     *
+     * `StatusBatchWith`'s functionality is largely similar to `StatusErrorBatchWith` but
+     * with the following changes:
+     * - `EntryType` is a pair of `ResponseField` (1) and either `StatusCode` or `ResponseField` (2)
+     * - The default tracking (or value-returning capacity statically) is 8.
+     * - If `addStatusEntry` or `addResultEntry` is called beyond the static capacity, a dynamic array is
+     *   initialized and it grows dynamically.
+     *
+     * (1): The target field <- Input Field
+     * (2): The result field <- Output Field
+     *
+     * An example of a stored response:
+     * [{"input1", "result2"}, {"input3", StatusCode::ERR_}, {...}, ...]
+     *
+    * @note Regardless of the size of the static blob, the entirety of the
+    * requested result (or StatusCode) will be returned, nothing will be dropped.
+    * @note This class does not own the memory of the Fields.
+     */
+    template <ResponseField F1, ResponseField F2>
+        requires (!std::is_same_v<F1, std::monostate>)      // F1 cannot be monostate
+    class StatusBatchWith{
+    public:
+
+        /// Either `ResponseField` (Result Field) or `StatusCode` will be returned per request
+        using ResultOrStatus = std::variant<F2, StatusCode>;
+
+        /**
+         * @brief Represents each TARGET_FIELD-FIELD_OR_STATUS pair; this is how raresy
+         * will carry individual result field (or StatusCode) for each operation target.
+         *
+         * For instance, the following could be how one may get the response when trying to fetch multiple
+         * keys which may or may not exist in the map:
+         * - `ops1: res1`
+         * - `ops2: ERR_`
+         * - `ops3: res3`
+         */
+        struct EntryType {
+            F1 target;
+            ResultOrStatus result;
+        };
+
+        // EntryType MUST BE trivially copyable.
+        static_assert(std::is_trivially_copyable_v<EntryType>, "EntryType must be trivially copyable!!!");
+
+        ////////////////////////////////////////////////// Constructors ////////////////////////////////////////////////
+        constexpr StatusBatchWith() noexcept = default;
+
+        // Delete copy constructors
+        StatusBatchWith(const StatusBatchWith&) = delete;
+        StatusBatchWith& operator=(const StatusBatchWith&) = delete;
+
+        // move constructor (in case NRVO fails; likely never)
+        StatusBatchWith(StatusBatchWith&& obj) noexcept
+        : _overall_code(obj._overall_code),
+        _dynamic_store(std::move(obj._dynamic_store)),
+        _entry_count(obj._entry_count),
+        _capacity(obj._capacity)
+        {
+            // if static buffer, we copy it.
+            if (obj._entries == reinterpret_cast<EntryType *>(obj._static_store)) {
+                std::memcpy(_static_store, obj._static_store, _entry_count * sizeof(EntryType));
+            } else {
+                // else it's dynamic, so we just snatch it.
+                _entries = obj._entries;
+            }
+            // resetting our obj
+            obj._entries = reinterpret_cast<EntryType*>(obj._static_store);
+            obj._entry_count = 0;
+            obj._capacity = TARGET_FIELD_TRACKING_CAPACITY;    // gotcha
+            obj._overall_code = StatusCode::ORPHANED;
+        }
+        ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    private:
+        /// The initial status code `ORPHANED`
+        StatusCode _overall_code = StatusCode::ORPHANED;
+
+        /// A fixed blob or block of memory, which stores `EntryType` objects.
+        alignas(EntryType)
+        std::byte _static_store[sizeof(EntryType)*TARGET_FIELD_TRACKING_CAPACITY]{};
+
+        /// A unique pointer to manage an array of type EntryType
+        std::unique_ptr<EntryType[]> _dynamic_store = nullptr;
+
+        /// Pointer that will track entries, initialized to point to _static_store
+        EntryType *_entries = reinterpret_cast<EntryType *>(_static_store);
+        std::uint32_t _entry_count = 0;
+        std::uint32_t _capacity = TARGET_FIELD_TRACKING_CAPACITY;
+
+        /**
+         * @brief Increases the dynamic storage capacity for entries when the current capacity is not enough.
+         *
+         * This method allocates a new buffer of larger size (by a factor of 1.5x) while copying the previous
+         * existing elements of the older buffer.
+         *
+         * @return True if the growth was successful, else false (in the case of OOM)
+         *
+         * @note This operation is noexcept and assumes that `EntryType` is trivially copyable.
+         */
+        [[nodiscard]] bool dynamically_grow() noexcept {
+            // Increases capacity dynamically
+
+            // Increasing the capacity by 1.5x (new buffer)
+            const std::uint32_t new_capacity = _capacity + _capacity / 2 + 8; // The +8 helps for small initial sizes
+
+            // pointer to new dynamic store
+            std::unique_ptr<EntryType[]> new_dynamic_store;
+
+            // TRY to allocate a new heap buffer of the new capacity.
+            try {
+                new_dynamic_store = std::make_unique<EntryType[]>(new_capacity);
+            } catch (const std::bad_alloc&) {
+                // return false in case of Out of Memory (OOM)
+                return false;
+            }
+            // Copy elements from the old buffer to the new buffer (safe to do so; EntryType is trivially copyable)
+            std::memcpy(new_dynamic_store.get(), _entries, _entry_count * sizeof(EntryType));
+
+            /*
+             Using `memcpy` for now.
+             Will switch to `std::uninitialized_move`, if EntryType becomes non-trivial in the future.
+            */
+
+            // We move the new buffer into our class's ownership.
+            _dynamic_store = std::move(new_dynamic_store);
+            // If we were previously on the heap, the old dynamic_store's
+            // destructor is called automatically when we re-assign it,
+            // freeing the old memory; perks of unique_ptr
+
+            _entries = _dynamic_store.get();   // Point to the new buffer
+            _capacity = new_capacity;          // Update capacity
+
+            // no bad alloc
+            return true;
+        }
+
+        /**
+         * @brief Internal helper for determining the general status code based on status code
+         * @param status_code The StausCode to find the general code of.
+         * @return StatusCode
+         */
+        [[nodiscard]] static constexpr StatusCode determine_general_code(const StatusCode status_code) noexcept {
+            const auto val = static_cast<std::uint16_t>(status_code);
+
+            // Success and Info codes can all be under OK general code
+            if (val < 200) return StatusCode::OK;
+            // Warnings
+            if (val < 400) return StatusCode::WARN_RESPONSE_CONTAINS_WARNINGS;
+            // If not success, infor or warn; has to be error
+            return StatusCode::ERR_SOME_OPERATIONS_FAILED;
+        }
+
+        /**
+         * @brief Internal overall code modifier based on status code
+         * @param status_code The added StatusCode to update the overall code accordingly.
+         */
+        constexpr void escalate_overall_code(const StatusCode status_code) noexcept {
+
+            // 0. nuke case, do nothing since nothing can escalate this
+            if (_overall_code == StatusCode::ERR_MULTIPLE_OPERATIONS_FAILED) { return; }
+
+            const StatusCode general_code = determine_general_code(status_code);
+
+            // 1. If ORPHANED, just set
+            if (_overall_code == StatusCode::ORPHANED) {
+                _overall_code = general_code;
+                return;
+            }
+
+            // 2. Otherwise, update based on severity ranking
+            // OK (0) < WARN_ (250) < ERR_ (406)
+            if (static_cast<std::uint16_t>(general_code) > static_cast<std::uint16_t>(_overall_code)) {
+                _overall_code = general_code;
+            }
+        }
+
+    public:
+
+        /**
+         * @brief Getter to return the overall status code
+         * @return _overall_code
+         */
+        [[nodiscard]] constexpr StatusCode code() const noexcept {
+            return _overall_code;
+        }
+
+        /**
+         * @brief Checks whether the overall status code is `StatusCode::OK`.
+         * @return True if the overall status code is `StatusCode::OK`, otherwise false.
+         */
+        [[nodiscard]] constexpr bool ok() const noexcept {
+            return _overall_code == StatusCode::OK;
+        }
+
+        /**
+         * @brief Setter to set the overall status code of the response
+         * @param code The status code of type StatusCode
+         */
+        constexpr void setCode(const StatusCode code) noexcept {
+            _overall_code = code;
+        }
+
+        /**
+         * @brief Adds a TARGET_FIELD-RESPONSE_FIELD pair to the Response's memory blob.
+         *
+         * @param target_field: The target of an operation or an operation itself.
+         * @param result_field: The result concerning the target.
+         */
+        void addResultEntry(F1 target_field, F2 result_field) noexcept
+            requires (!std::is_same_v<F2, std::monostate>) {
+
+            // if OOM, we bail
+            if (_overall_code == StatusCode::ERR_OUT_OF_MEMORY) return;
+
+            if (_entry_count >= _capacity) {
+                if (!dynamically_grow()) {
+                    _overall_code = StatusCode::ERR_OUT_OF_MEMORY;
+                    return;
+                }
+            }
+
+            // Construct OPERATION_TARGET-VALUE in STORE at entry_count.
+            new(&_entries[_entry_count]) EntryType{target_field, result_field};
+            ++_entry_count;
+
+            // Since both fields are being added, clearly everything is okay! So, we try to
+            // escalate the overall-code with OK to overwrite the initial case
+            escalate_overall_code(StatusCode::OK);
+        }
+
+        /**
+         * @brief Adds a TARGET_field-STATUS_CODE pair to the Response's memory blob.
+         * @param target_field : The target of an operation or an operation itself
+         * @param status_code : The status code concerning the target
+         */
+        void addStatusEntry(F1 target_field, StatusCode status_code) noexcept {
+            // shrugieeee
+
+            // if OOM, we bail
+            if (_overall_code == StatusCode::ERR_OUT_OF_MEMORY) return;
+
+            if (_entry_count >= _capacity) {
+                if (!dynamically_grow()) {
+                    _overall_code = StatusCode::ERR_OUT_OF_MEMORY;
+                    return;
+                };
+            }
+
+            // Construct OPERATION_TARGET-STATUS_CODE in STORE at entry_count.
+            new(&_entries[_entry_count]) EntryType{target_field, status_code};
+            ++_entry_count;
+
+            escalate_overall_code(status_code);
+        }
+
+        [[nodiscard]] std::uint32_t totalEntryCount() const noexcept { return _entry_count; }
+
+        /**
+        * @brief Provides a constant iterator pointing to the beginning of the `entries` collection.
+        * @return A pointer to the first error entry in the `entries` collection.
+        */
+        [[nodiscard]] constexpr auto begin() const noexcept { return _entries; }
+
+        /**
+         * @brief Provides a constant iterator pointing to the end of the `entries` collection.
+         * @return A pointer to one past the last error entry in the `entries` collection.
+         */
+        [[nodiscard]] constexpr auto end() const noexcept { return _entries + _entry_count; }
+
     };
 
 } // namespace raresy
