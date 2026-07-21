@@ -375,7 +375,7 @@ namespace raresy {
 
             /*
              Using `memcpy` for now.
-             Will switch to `std::uninitialized_move`, if EntryType becomes non-trivial in the future.
+             Will switch to `std::uninitialized_move` if EntryType becomes non-trivial in the future.
             */
 
             // We move the new buffer into our class's ownership.
@@ -491,7 +491,6 @@ namespace raresy {
          * @param status_code : The status code concerning the target
          */
         void addStatusEntry(F1 target_field, StatusCode status_code) noexcept {
-            // shrugieeee
 
             // if OOM, we bail
             if (_overall_code == StatusCode::ERR_OUT_OF_MEMORY) return;
@@ -668,8 +667,8 @@ namespace raresy {
         }
 
         /**
-         * @brief Getter to return the total number of errors occurred, not
-         * necessarily equal to the number of entries in the response buffer.
+         * @brief Getter to return the total number of errors occurred.
+         * Not necessarily equal to the number of entries in the response buffer.
          * @return _failure_count
          */
         [[nodiscard]] constexpr std::uint32_t totalErrorCount() const noexcept {
@@ -711,7 +710,7 @@ namespace raresy {
         }
     };
 
-    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    /// ############################################################################################################ ///
 
 } // namespace raresy
 
