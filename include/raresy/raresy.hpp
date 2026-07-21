@@ -117,14 +117,17 @@ namespace raresy {
     class Status {
 
     public:
+        ////////////////////////////////////////////////// Constructors ////////////////////////////////////////////////
         // default formality constructor
         constexpr Status() noexcept = default;
+
         // Explicit constructor to initialize `_status_code` with StatusCode types.
         explicit Status(StatusCode status_code) noexcept : _status_code(status_code) {
             if (static_cast<int16_t>(status_code) >= 400) {  // 400+ is the range of errors
                 ++_failure_count;
             }
         }
+        ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     private:
         /// Represents a single status outcome; either from a single operation
@@ -171,6 +174,83 @@ namespace raresy {
             return _status_code == StatusCode::OK;
         }
     };
+
+    /// ######################################### StatusWith<F> #################################################### ///
+
+    /**
+     * @brief A single status-field response class
+
+     * This class encapsulates the response status code and a field value of the type ResponseField.
+     * @note This class does not own field's memory
+     */
+    template<ResponseField F>
+        requires (!std::is_same_v<F, std::monostate>)   // mustn't be monostate
+    class StatusWith {
+
+        /// The field value: initialized to default values
+        F _field { };
+
+        /// The status code: initialized to the default status code ORPHANED
+        StatusCode _status_code = StatusCode::ORPHANED;
+
+    public:
+        ////////////////////////////////////////////////// Constructors ////////////////////////////////////////////////
+        constexpr StatusWith() noexcept = default;
+
+        // Explicit constructor to initialize the class object
+        // with custom _field and _status_code values.
+        explicit StatusWith(F field, const StatusCode status_code) noexcept
+        : _field(field), _status_code(status_code) {}
+        ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+        /**
+         * @brief Getter to return the overall status code
+         * @return _status_code
+         */
+        [[nodiscard]] constexpr StatusCode code() const noexcept { return _status_code; }
+
+        /**
+         * @brief Checks whether the status code is `StatusCode::OK`.
+         * @return True if the status code is `StatusCode::OK`, otherwise false.
+         */
+        [[nodiscard]] constexpr bool ok() const noexcept { return _status_code == StatusCode::OK; }
+
+        /**
+         * @brief Getter to return the field object
+         * @return ResponseField type object
+         */
+        [[nodiscard]] constexpr F field () const noexcept { return _field; }
+
+
+        // with the explicit constructor, I know these won't be used 99% of the times
+        // but oh well, it's a nice to have.
+
+        /**
+         * @brief Common setter to set both the status code and the field values
+         * @param code The status code of type StatusCode
+         * @param response_field The field of type ResponseField to set
+         */
+        constexpr void fill(F response_field, StatusCode code) noexcept {
+            _field = response_field;
+            _status_code = code;
+        }
+
+
+        // especially these two
+
+        /**
+         * @brief Setter to set the field value of the response
+         * @param response_field The field of type ResponseField
+         */
+        constexpr void setField(F response_field) noexcept { _field = response_field; }
+
+        /**
+         * @brief Setter to set the status code of the response
+         * @param code The status code of type StatusCode
+         */
+        constexpr void setCode(const StatusCode code) noexcept { _status_code = code; }
+    };
+
 } // namespace raresy
 
 #endif // RARESY_HPP
